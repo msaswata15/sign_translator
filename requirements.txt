@@ -1,0 +1,8 @@
+PyTorch
+numpy
+tqdm
+opencv-python
+pyttsx3
+pyyaml
+nltk
+pandas

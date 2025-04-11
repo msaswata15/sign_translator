@@ -1,0 +1,12 @@
+# Global configuration parameters
+input_size: 150           # Number of keypoint features per frame (can be adjusted if you change the extraction)
+hidden_size: 256          # Hidden size for LSTMs and attention modules
+num_layers: 2             # Number of LSTM layers
+dropout: 0.3
+batch_size: 8
+num_epochs: 20
+learning_rate: 0.001
+max_seq_len: 75           # Maximum sequence length for a video (frames)
+checkpoint_path: "checkpoints/model.pt"
+self_supervised_loss_weight: 0.1  # Weight for the self-supervised masked-frame prediction loss
+# Data configuration
