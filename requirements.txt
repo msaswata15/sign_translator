@@ -1,4 +1,4 @@
-PyTorch
+torch
 numpy
 tqdm
 opencv-python
@@ -6,3 +6,12 @@ pyttsx3
 pyyaml
 nltk
 pandas
+gtts
+mediapipe
+transformers
+scikit-learn
+matplotlib
+streamlit
+streamlit-webrtc
+torchvision
+torchaudio
