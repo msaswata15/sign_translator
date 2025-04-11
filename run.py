@@ -2,9 +2,9 @@ import pandas as pd
 import os
 
 # Paths
-labels_csv_path = "data/raw/labels.csv"  # replace with your actual path
-processed_data_dir = "data/processed"  # directory containing processed files
-output_csv_path = "data/raw/labels.csv"  # can overwrite labels_csv_path if you want
+labels_csv_path = "data/labels.csv"  # replace with your actual path
+processed_data_dir = "data/processed/Train"  # directory containing processed files
+output_csv_path = "data/labels.csv"  # can overwrite labels_csv_path if you want
 
 # Load labels
 df = pd.read_csv(labels_csv_path, sep='\t')  # use sep='\t' if it's tab-separated
