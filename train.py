@@ -1,103 +1,108 @@
-import os
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.nn.utils.rnn import pad_sequence
-from tqdm import tqdm
-import yaml
-from transformers import T5Tokenizer
-
-from models.body_encoder import BodyEncoder
-from models.face_encoder import FaceEncoder
-from models.hand_encoder import HandEncoder
-from models.spatio_temporal_decoder import SpatioTemporalDecoder
+from utils.data_loader import get_dataloader
 from models.seq2seq import Seq2Seq
-from utils.data_loader import get_dataloaders
-from utils.metrics import compute_bleu, compute_wer
+from models.hand_encoder import HandEncoder
+from models.face_encoder import FaceEncoder
+from models.body_encoder import BodyEncoder
+from models.spatiotemporal_fusion import ModalityFusion
+from models.nlp_decoder import NLPDecoder
+from utils.utils import load_config, load_vocab, save_model
+import matplotlib.pyplot as plt
 
-# ==== Config ====
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-# ==== Tokenizer ====
-tokenizer = T5Tokenizer.from_pretrained("t5-small")
-pad_idx = tokenizer.pad_token_id
-
-# ==== Data ====
-train_loader, val_loader, test_loader = get_dataloaders(
-    config["data"]["npz_dir"],
-    config["data"]["label_csv"],
-    tokenizer,
-    batch_size=config["train"]["batch_size"]
-)
-
-# ==== Models ====
-hand_encoder = HandEncoder(config["model"]["hand_input"], config["model"]["hidden_dim"]).to(device)
-face_encoder = FaceEncoder(config["model"]["face_input"], config["model"]["hidden_dim"]).to(device)
-body_encoder = BodyEncoder(config["model"]["body_input"], config["model"]["hidden_dim"]).to(device)
-
-decoder = SpatioTemporalDecoder(
-    input_dim=config["model"]["hidden_dim"] * 3,
-    hidden_dim=config["model"]["decoder_hidden"],
-    output_dim=tokenizer.vocab_size
-).to(device)
-
-model = Seq2Seq(hand_encoder, face_encoder, body_encoder, decoder, device).to(device)
-
-# ==== Optimizer & Loss ====
-optimizer = optim.Adam(model.parameters(), lr=config["train"]["lr"])
-criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
-
-# ==== Training Loop ====
-def train_epoch(model, dataloader, optimizer, criterion):
+def train(model, dataloader, optimizer, criterion, clip, device):
     model.train()
-    epoch_loss = 0
-    for hand, face, body, target in tqdm(dataloader):
-        hand, face, body, target = hand.to(device), face.to(device), body.to(device), target.to(device)
+    total_loss = 0
+    for src, trg, keypoint_lengths, _ in dataloader:
+        src, trg = src.to(device), trg.to(device)
+        
         optimizer.zero_grad()
-        output = model(hand, face, body, target)
-
+        output = model(src, trg, keypoint_lengths)
         output_dim = output.shape[-1]
         output = output[:, 1:].reshape(-1, output_dim)
-        target = target[:, 1:].reshape(-1)
-
-        loss = criterion(output, target)
+        trg = trg[:, 1:].reshape(-1)
+        
+        loss = criterion(output, trg)
         loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
-        epoch_loss += loss.item()
-    return epoch_loss / len(dataloader)
+        total_loss += loss.item()
+    return total_loss / len(dataloader)
 
-# ==== Validation ====
-def evaluate(model, dataloader, criterion):
+def evaluate(model, dataloader, criterion, device):
     model.eval()
-    epoch_loss = 0
+    total_loss = 0
     with torch.no_grad():
-        for hand, face, body, target in dataloader:
-            hand, face, body, target = hand.to(device), face.to(device), body.to(device), target.to(device)
-            output = model(hand, face, body, target, teacher_forcing_ratio=0.0)
+        for src, trg, keypoint_lengths, _ in dataloader:
+            src, trg = src.to(device), trg.to(device)
+            output = model(src, trg, keypoint_lengths, teacher_forcing_ratio=0.0)
+            output = output[:, 1:].reshape(-1, output.shape[-1])
+            trg = trg[:, 1:].reshape(-1)
+            loss = criterion(output, trg)
+            total_loss += loss.item()
+    return total_loss / len(dataloader)
 
-            output_dim = output.shape[-1]
-            output = output[:, 1:].reshape(-1, output_dim)
-            target = target[:, 1:].reshape(-1)
+def plot_losses(train_losses, val_losses, save_path="loss_plot.png"):
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("Training & Validation Loss")
+    plt.savefig(save_path)
+    plt.close()
 
-            loss = criterion(output, target)
-            epoch_loss += loss.item()
-    return epoch_loss / len(dataloader)
+def main():
+    config = load_config("config.yaml")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    vocab = load_vocab("vocab.json")
+    
+    train_loader = get_dataloader(config["train_data_path"], config["label_train_csv"], vocab, 
+                                  batch_size=config["batch_size"], shuffle=True)
+    val_loader = get_dataloader(config["val_data_path"], config["label_val_csv"], vocab, 
+                                batch_size=config["batch_size"], shuffle=False)
+    
+    hand_encoder = HandEncoder(input_size=84, hidden_size=config["hand_encoder"]["hidden_size"],
+                               num_layers=config["hand_encoder"]["num_layers"],
+                               dropout=config["dropout"])
+    face_encoder = FaceEncoder(input_size=140, hidden_size=config["face_encoder"]["hidden_size"],
+                               num_layers=config["face_encoder"]["num_layers"],
+                               dropout=config["dropout"])
+    body_encoder = BodyEncoder(input_size=75, hidden_size=config["body_encoder"]["hidden_size"],
+                               num_layers=config["body_encoder"]["num_layers"],
+                               dropout=config["dropout"])
+    fusion = ModalityFusion(hand_dim=2*config["hand_encoder"]["hidden_size"],
+                            face_dim=2*config["face_encoder"]["hidden_size"],
+                            body_dim=2*config["body_encoder"]["hidden_size"],
+                            fused_dim=config["fusion"]["fused_dim"])
+    decoder = NLPDecoder(vocab_size=config["vocab_size"],
+                         emb_dim=config["embedding_dim"],
+                         context_dim=config["fusion"]["fused_dim"],
+                         hidden_dim=config["decoder_hidden_dim"],
+                         dropout=config["dropout"])
+    
+    model = Seq2Seq(hand_encoder, face_encoder, body_encoder, fusion, decoder, device).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
+    criterion = nn.CrossEntropyLoss(ignore_index=config["pad_token"])
+    
+    best_val_loss = float('inf')
+    train_losses, val_losses = [], []
+    
+    for epoch in range(config["epochs"]):
+        train_loss = train(model, train_loader, optimizer, criterion, config["clip"], device)
+        val_loss = evaluate(model, val_loader, criterion, device)
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        
+        print(f"[Epoch {epoch+1}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_model(model, "models/best_model.pt")
+            print("[INFO] Saved best model.")
+    
+    plot_losses(train_losses, val_losses)
 
-# ==== Training ====
-best_val_loss = float("inf")
-save_path = config["train"]["save_path"]
-
-for epoch in range(config["train"]["epochs"]):
-    train_loss = train_epoch(model, train_loader, optimizer, criterion)
-    val_loss = evaluate(model, val_loader, criterion)
-
-    print(f"Epoch {epoch+1}/{config['train']['epochs']} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(model.state_dict(), save_path)
-        print(f"Saved best model to {save_path}")
+if __name__ == "__main__":
+    main()

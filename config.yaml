@@ -1,12 +1,72 @@
-# Global configuration parameters
-input_size: 150           # Number of keypoint features per frame (can be adjusted if you change the extraction)
-hidden_size: 256          # Hidden size for LSTMs and attention modules
-num_layers: 2             # Number of LSTM layers
-dropout: 0.3
-batch_size: 8
-num_epochs: 20
+# Data Paths
+train_data_path: data/processed/Train
+val_data_path: data/processed/Validation
+test_data_path: data/processed/Test
+label_train_csv: data/raw/labels.csv
+label_val_csv: data/raw/validation.csv
+label_test_csv: data/raw/test.csv
+
+# Model Input Dimensions
+input_size: 299  # Total keypoints (84 hand + 140 face + 75 body)
+
+# Hand Encoder
+hand_encoder:
+  input_size: 84  # 42 left + 42 right
+  hidden_size: 256
+  num_layers: 2
+
+# Face Encoder
+face_encoder:
+  input_size: 140  # x, y for 70 keypoints
+  hidden_size: 256
+  num_layers: 2
+
+# Body Encoder
+body_encoder:
+  input_size: 75  # x, y, confidence for 25 keypoints
+  hidden_size: 256
+  num_layers: 2
+
+# Fusion Module
+fusion:
+  fused_dim: 512
+
+# Decoder
+embedding_dim: 256
+decoder_hidden_dim: 256
+vocab_size: 26956
+sos_token: 1
+eos_token: 2
+pad_token: 0
+
+# Training Hyperparameters
+batch_size: 4  # Reduced for 16 GB RAM
+epochs: 20
 learning_rate: 0.001
-max_seq_len: 75           # Maximum sequence length for a video (frames)
-checkpoint_path: "checkpoints/model.pt"
-self_supervised_loss_weight: 0.1  # Weight for the self-supervised masked-frame prediction loss
-# Data configuration
+clip: 1.0
+dropout: 0.3
+teacher_forcing_ratio: 0.5
+
+# Preprocessing
+preprocess:
+  normalize: true
+  augment: true
+  scale_range: [0.9, 1.1]
+  rotation_angle: 10
+
+# T5 Sentence Completion
+use_t5_completion: true
+t5_model_name: "t5-small"
+t5_max_length: 64
+
+# Inference
+streamlit_webcam_enabled: true
+max_translation_length: 40
+translation_threshold: 5
+smoothing_window: 5
+
+# Text-to-Speech
+use_tts: true
+tts_rate: 150
+tts_volume: 1.0
+tts_voice_idx: 0

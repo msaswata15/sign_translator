@@ -1,87 +1,68 @@
 import torch
-from torch.nn.functional import softmax
-from transformers import T5Tokenizer
-import yaml
-from tqdm import tqdm
-from nltk.translate.bleu_score import sentence_bleu
-from jiwer import wer
-
-from models.body_encoder import BodyEncoder
-from models.face_encoder import FaceEncoder
-from models.hand_encoder import HandEncoder
-from models.spatio_temporal_decoder import SpatioTemporalDecoder
+from torch.utils.data import DataLoader
+from utils.data_loader import get_dataloader
 from models.seq2seq import Seq2Seq
-from utils.data_loader import get_dataloaders
+from models.hand_encoder import HandEncoder
+from models.face_encoder import FaceEncoder
+from models.body_encoder import BodyEncoder
+from models.spatiotemporal_fusion import ModalityFusion
+from models.nlp_decoder import NLPDecoder
+from utils.utils import load_config, load_vocab, load_model
+from utils.metrics import compute_bleu, compute_wer
 
-# ==== Config ====
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ==== Tokenizer ====
-tokenizer = T5Tokenizer.from_pretrained("t5-small")
-pad_idx = tokenizer.pad_token_id
-
-# ==== Load Data ====
-_, _, test_loader = get_dataloaders(
-    config["data"]["npz_dir"],
-    config["data"]["label_csv"],
-    tokenizer,
-    batch_size=config["eval"]["batch_size"],
-    mode="test"
-)
-
-# ==== Load Model ====
-hand_encoder = HandEncoder(config["model"]["hand_input"], config["model"]["hidden_dim"]).to(device)
-face_encoder = FaceEncoder(config["model"]["face_input"], config["model"]["hidden_dim"]).to(device)
-body_encoder = BodyEncoder(config["model"]["body_input"], config["model"]["hidden_dim"]).to(device)
-
-decoder = SpatioTemporalDecoder(
-    input_dim=config["model"]["hidden_dim"] * 3,
-    hidden_dim=config["model"]["decoder_hidden"],
-    output_dim=tokenizer.vocab_size
-).to(device)
-
-model = Seq2Seq(hand_encoder, face_encoder, body_encoder, decoder, device).to(device)
-model.load_state_dict(torch.load(config["train"]["save_path"], map_location=device))
-model.eval()
-
-# ==== Inference ====
-def decode_sequence(output_logits):
-    tokens = output_logits.argmax(dim=-1).tolist()
-    decoded_sentences = []
-    for seq in tokens:
-        # Remove padding and stop at </s>
-        words = tokenizer.decode(seq, skip_special_tokens=True)
-        decoded_sentences.append(words)
-    return decoded_sentences
-
-def evaluate_bleu_wer(model, dataloader):
-    all_bleu_scores = []
-    all_wers = []
-
+def evaluate_model(model, dataloader, vocab, device):
+    model.eval()
+    references, hypotheses = [], []
+    inv_vocab = {v: k for k, v in vocab.items()}
+    
     with torch.no_grad():
-        for hand, face, body, targets in tqdm(dataloader):
-            hand, face, body = hand.to(device), face.to(device), body.to(device)
-            outputs = model(hand, face, body, targets, teacher_forcing_ratio=0.0)
+        for src, trg, keypoint_lengths, _ in dataloader:
+            src, trg = src.to(device), trg.to(device)
+            output = model(src, trg, keypoint_lengths, teacher_forcing_ratio=0.0)
+            preds = output.argmax(dim=-1).cpu().numpy()
+            targets = trg.cpu().numpy()
+            
+            for pred_seq, target_seq in zip(preds, targets):
+                pred_sentence = " ".join([inv_vocab.get(tok, "") for tok in pred_seq if tok not in {vocab["<sos>"], vocab["<eos>"], vocab["<pad>"]}])
+                target_sentence = " ".join([inv_vocab.get(tok, "") for tok in target_seq if tok not in {vocab["<sos>"], vocab["<eos>"], vocab["<pad>"]}])
+                hypotheses.append(pred_sentence)
+                references.append(target_sentence)
+    
+    bleu = compute_bleu(references, hypotheses)
+    wer_score = compute_wer(references, hypotheses)
+    return bleu, wer_score
 
-            predictions = decode_sequence(outputs)
-            references = decode_sequence(targets)
+def main():
+    config = load_config("config.yaml")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    vocab = load_vocab("vocab.json")
+    
+    test_loader = get_dataloader(config["test_data_path"], config["label_test_csv"], vocab, batch_size=1, shuffle=False)
+    
+    hand_encoder = HandEncoder(input_size=84, hidden_size=config["hand_encoder"]["hidden_size"],
+                               num_layers=config["hand_encoder"]["num_layers"],
+                               dropout=config["dropout"])
+    face_encoder = FaceEncoder(input_size=140, hidden_size=config["face_encoder"]["hidden_size"],
+                               num_layers=config["face_encoder"]["num_layers"],
+                               dropout=config["dropout"])
+    body_encoder = BodyEncoder(input_size=75, hidden_size=config["body_encoder"]["hidden_size"],
+                               num_layers=config["body_encoder"]["num_layers"],
+                               dropout=config["dropout"])
+    fusion = ModalityFusion(hand_dim=2*config["hand_encoder"]["hidden_size"],
+                            face_dim=2*config["face_encoder"]["hidden_size"],
+                            body_dim=2*config["body_encoder"]["hidden_size"],
+                            fused_dim=config["fusion"]["fused_dim"])
+    decoder = NLPDecoder(vocab_size=config["vocab_size"],
+                         emb_dim=config["embedding_dim"],
+                         context_dim=config["fusion"]["fused_dim"],
+                         hidden_dim=config["decoder_hidden_dim"],
+                         dropout=config["dropout"])
+    
+    model = Seq2Seq(hand_encoder, face_encoder, body_encoder, fusion, decoder, device).to(device)
+    load_model(model, "models/best_model.pt")
+    
+    bleu, wer_score = evaluate_model(model, test_loader, vocab, device)
+    print(f"BLEU Score: {bleu:.4f} | WER: {wer_score:.4f}")
 
-            for pred, ref in zip(predictions, references):
-                ref_tokens = ref.split()
-                pred_tokens = pred.split()
-                bleu = sentence_bleu([ref_tokens], pred_tokens)
-                error = wer(ref, pred)
-                all_bleu_scores.append(bleu)
-                all_wers.append(error)
-
-    avg_bleu = sum(all_bleu_scores) / len(all_bleu_scores)
-    avg_wer = sum(all_wers) / len(all_wers)
-    return avg_bleu, avg_wer
-
-# ==== Run Evaluation ====
-bleu_score, wer_score = evaluate_bleu_wer(model, test_loader)
-print(f"\n✅ BLEU Score: {bleu_score:.4f}")
-print(f"❌ WER Score : {wer_score:.4f}")
+if __name__ == "__main__":
+    main()
