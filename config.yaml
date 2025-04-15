@@ -2,9 +2,9 @@
 train_data_path: data/processed/Train
 val_data_path: data/processed/Validation
 test_data_path: data/processed/Test
-label_train_csv: data/raw/labels.csv
-label_val_csv: data/raw/validation.csv
-label_test_csv: data/raw/test.csv
+label_train_csv: data/processed/labels.csv
+label_val_csv: data/processed/validation.csv
+label_test_csv: data/processed/test.csv
 
 # Model Input Dimensions
 input_size: 299  # Total keypoints (84 hand + 140 face + 75 body)
@@ -12,19 +12,19 @@ input_size: 299  # Total keypoints (84 hand + 140 face + 75 body)
 # Hand Encoder
 hand_encoder:
   input_size: 84  # 42 left + 42 right
-  hidden_size: 256
+  hidden_size: 32
   num_layers: 2
 
 # Face Encoder
 face_encoder:
   input_size: 140  # x, y for 70 keypoints
-  hidden_size: 256
+  hidden_size: 32
   num_layers: 2
 
 # Body Encoder
 body_encoder:
   input_size: 75  # x, y, confidence for 25 keypoints
-  hidden_size: 256
+  hidden_size: 32
   num_layers: 2
 
 # Fusion Module
@@ -40,8 +40,8 @@ eos_token: 2
 pad_token: 0
 
 # Training Hyperparameters
-batch_size: 4  # Reduced for 16 GB RAM
-epochs: 20
+batch_size: 2  # Reduced for 16 GB RAM
+epochs: 2
 learning_rate: 0.001
 clip: 1.0
 dropout: 0.3

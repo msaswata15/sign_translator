@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 from utils.data_loader import get_dataloader
 from models.seq2seq import Seq2Seq
 from models.hand_encoder import HandEncoder
@@ -13,33 +14,35 @@ import matplotlib.pyplot as plt
 def train(model, dataloader, optimizer, criterion, clip, device):
     model.train()
     total_loss = 0
-    for src, trg, keypoint_lengths, _ in dataloader:
+    loop = tqdm(dataloader, desc="Training", leave=False)
+    for src, trg, keypoint_lengths, _ in loop:
         src, trg = src.to(device), trg.to(device)
-        
         optimizer.zero_grad()
         output = model(src, trg, keypoint_lengths)
         output_dim = output.shape[-1]
         output = output[:, 1:].reshape(-1, output_dim)
         trg = trg[:, 1:].reshape(-1)
-        
         loss = criterion(output, trg)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
         total_loss += loss.item()
+        loop.set_postfix(loss=loss.item())
     return total_loss / len(dataloader)
 
 def evaluate(model, dataloader, criterion, device):
     model.eval()
     total_loss = 0
+    loop = tqdm(dataloader, desc="Evaluating", leave=False)
     with torch.no_grad():
-        for src, trg, keypoint_lengths, _ in dataloader:
+        for src, trg, keypoint_lengths, _ in loop:
             src, trg = src.to(device), trg.to(device)
             output = model(src, trg, keypoint_lengths, teacher_forcing_ratio=0.0)
             output = output[:, 1:].reshape(-1, output.shape[-1])
             trg = trg[:, 1:].reshape(-1)
             loss = criterion(output, trg)
             total_loss += loss.item()
+            loop.set_postfix(loss=loss.item())
     return total_loss / len(dataloader)
 
 def plot_losses(train_losses, val_losses, save_path="loss_plot.png"):
@@ -91,12 +94,13 @@ def main():
     train_losses, val_losses = [], []
     
     for epoch in range(config["epochs"]):
+        print(f"\n[Epoch {epoch+1}/{config['epochs']}]")
         train_loss = train(model, train_loader, optimizer, criterion, config["clip"], device)
         val_loss = evaluate(model, val_loader, criterion, device)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         
-        print(f"[Epoch {epoch+1}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             save_model(model, "models/best_model.pt")
